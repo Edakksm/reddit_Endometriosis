@@ -1,0 +1,290 @@
+import pandas as pd
+import time
+from datetime import datetime
+import urllib.request
+import json
+from dateutil.relativedelta import relativedelta
+from dateutil import parser
+from Init import Init
+from collections import defaultdict
+import html.parser
+import pytz    # $ pip install pytz
+import tzlocal
+import itertools
+import os
+from bs4 import BeautifulSoup
+import re
+import xml.sax.saxutils as saxutils
+import os.path
+
+
+def cleanhtml(raw_html):
+  cleanr = re.compile('<.*?>')
+  cleantext = re.sub(cleanr, '', raw_html)
+  cleantext = re.sub(r'\w+:\/{2}[\d\w-]+(\.[\d\w-]+)*(?:(?:\/[^\s/]*))*', '', cleantext)
+  cleantext = re.sub(r'(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]','',cleantext.strip())
+  cleantext =  re.sub("[\n\t\r]",'',cleantext)
+  cleantext = re.sub(r'[^A-Za-z0-9]+', ' ', cleantext)
+  return cleantext
+
+def Find(string):
+    # findall() has been used
+    # with valid conditions for urls in string
+    url = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]  |[!*\(\), ]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', string)
+    return url
+
+
+init = Init()
+
+start_date = parser.parse('Jan 01 2018 01:00AM')
+init_date = parser.parse('Apr 01 2017 12:00AM') # The hard start date
+#start_date = parser.parse('May 20 2017 01:00AM')
+#init_date = parser.parse('Apr 10 2017 12:00AM')
+cut_off_date = parser.parse('Jan 01 2018 12:00AM') # The hard end date - All endo users first post should be between Jan 01 2018 and current date
+cut_off_date_3months = parser.parse('Aug 01 2018 12:00AM') # Added this for negative users - to give a buffer of 3 months. For example, if a user posts on Nov 1st (
+                            # today is Nov 12th, then since there are only 12 days from Nov 1st to 12th, we cant say that the user is a non endo users just because
+                            # the user didnt get a chance to post to endo
+
+def Process():
+    endo_users = pd.read_csv('endoUsers_2018.csv')
+    non_endo_subreddits = pd.read_csv('FinalReddits.csv').iloc[:,0]
+    endo_users = endo_users.set_index('user_name').T.to_dict('list')
+
+    pos_users = defaultdict(list)
+    neg_users = defaultdict(list)
+    outside_users = defaultdict(list)
+    d = os.getcwd()
+    if not (os.path.exists(os.path.join(d, 'pos4'))):
+      os.mkdir('pos4')
+      os.mkdir('neg4')
+    for sub_red in non_endo_subreddits:
+        pos_users, neg_users, outside_users = getEndoBatchUsers(endo_users, sub_red, start_date, init_date, pos_users, neg_users, outside_users)
+        print('len of pos users is :{0}', len(pos_users))
+        print('len of neg users is :{0}', len(neg_users))
+        print('len of neg users is :{0}', len(outside_users))
+        print('completed')
+        with open('usercount.csv','a') as f:
+          s = sub_red + ',' + str(len(pos_users)) + ',' + str(len(neg_users)) + ',' + str(len(outside_users))
+          f.write(s)
+          f.write('\n')
+
+  #  pos_total_count = [user[i][4] for i, user in pos_users.items()]
+    pos_total_count = []
+    for user_name, user in pos_users.items():
+        pos_total_count.append(user[-1][4])
+
+       # count = 0
+      #  for i in range(len(user)):
+          #  count = count + user[i][3]
+
+    new_neg_user = defaultdict(dict)
+   # a = {1:((1,2,3,23,23), (1,2,3,34,34),(1,2,3,123,78),(1,2,3,23,89),(1,2,3,23,87), (1,2,3,23,120)), 2:((3,6,3,23,56))}
+    #pos_total_count = [123,344]
+    for user_name, user in neg_users.items():
+            try:
+               c = user[len(user)-1][4]
+            except Exception as ex:
+               c = user[4]
+           # if any(elem in list(range(c - 10, c + 10)) for elem in pos_total_count):
+            if c in pos_total_count:
+                 new_neg_user[user_name] = user
+
+    print('Now print new neg users:{0}'.format(len(new_neg_user)))
+  #  neg_users = [n for n in neg_users if n[-1][4] in pos_total_count]
+
+    pos_user_count = len(pos_users)
+    neg_users_count = len(new_neg_user)
+    ideal_neg_count = 10 * pos_user_count
+    if neg_users_count > ideal_neg_count:
+        neg_users_count = ideal_neg_count
+
+   # neg_users1 = {k:neg_users[k] for k in sorted(neg_users.keys())}[:neg_users_count]
+    neg_users = dict(itertools.islice(new_neg_user.items(),0, neg_users_count))
+    print('Now print latest neg users:{0}'.format(len(neg_users)))
+   # cdict = {c.name: c.value for c in neg_users}
+    d_pos = os.path.join(d, 'pos4')
+    d_neg = os.path.join(d, 'neg4')
+    if not (os.path.exists(os.path.join(d_pos, 'pos4'))):
+        os.chdir(d_pos)
+    for i,user in pos_users.items():
+        try:
+            file_name = os.path.join(d_pos, i + '.txt')
+            if os.path.exists(file_name):
+               print(i)
+               print('\n')
+            with open(file_name, 'a', encoding='utf-8') as f:
+                count = len(user)
+                if count > 1:
+                    with open('count_greaterthan1.csv', 'a', encoding='utf-8') as g:
+                        g.write(i)
+                        g.write('|')
+                        g.write(str(count))
+                        g.write('\n')
+                for i in range(count):
+                    f.write(user[i][0])
+                    f.write('|')
+                    msg_created_time = datetime.fromtimestamp(user[i][2]).strftime('%c')
+                    f.write(msg_created_time) #convert to reg date
+                    f.write('|')
+                    f.write(str(user[i][3]))
+                    f.write('|')
+                    f.write(user[i][1])
+                    f.write('\n')
+        except Exception as ex:
+            print(ex)
+            init.logger.writeError(ex)
+
+    if not (os.path.exists(os.path.join(d_neg, 'neg4'))):
+        os.chdir(d_neg)
+    for i,user in neg_users.items():
+        try:
+            file_name = os.path.join(d_neg, i + '.txt')
+            if os.path.exists(file_name):
+                print(i)
+                print('\n')
+            with open(file_name, 'a', encoding='utf-8') as f:
+                count = len(user)
+                if count > 1:
+                    with open('count_greaterthan1.csv', 'a', encoding='utf-8') as g:
+                        g.write(i)
+                        g.write('|')
+                        g.write(str(count))
+                        g.write('\n')
+                for i in range(count):
+                    f.write(user[i][0])
+                    f.write('|')
+                    msg_created_time = datetime.fromtimestamp(user[i][2]).strftime('%c')
+                    f.write(msg_created_time)  # convert to reg date
+                    f.write('|')
+                    f.write(str(user[i][3]))
+                    f.write('|')
+                    f.write(user[i][1])
+                    f.write('\n')
+        except Exception as ex:
+            print(ex)
+            init.logger.writeError(ex)
+
+
+
+def getEndoBatchUsers(endo_users, sub_red, start_date, init_date,pos_users, neg_users, outside_users):
+    d = defaultdict(list)
+    start_date_epoch = time.mktime(start_date.timetuple())
+    end_date = start_date - relativedelta(hours=int(1))
+    end_date_epoch = time.mktime(end_date.timetuple())
+    dates = set()
+    comment_length = set()
+    while end_date > init_date:
+        try:
+             api_comment_url = 'https://api.pushshift.io/reddit/search/comment/?subreddit=' + sub_red + '&before='+ str(int(start_date_epoch)) + '&after=' + str(int(end_date_epoch)) + '&size=5000&sort=desc'
+             url = urllib.request.urlopen(api_comment_url)
+             user_data = json.loads(url.read().decode())
+             count = 0
+             total_count = 0
+             for user_detail in user_data['data']:
+                # try:
+                     t = user_detail['created_utc']
+                     msg_created_time = datetime.fromtimestamp(t).strftime('%c')
+                     if 'author' in user_detail and 'body' in user_detail:
+                         key = user_detail['author']
+                         value = cleanhtml(saxutils.unescape(user_detail['body']))
+                         count += 1
+                       # if key == 'dorianrose':
+                        #     s = 'asda'
+                         #    start_date = end_date
+                          #   start_date_epoch = end_date_epoch
+                           #  end_date = start_date - relativedelta(hours=int(1))
+                            # end_date_epoch = time.mktime(end_date.timetuple())
+                         if len(value) > 0:
+                          #   total_count += len(value.split())
+                             if key in list(endo_users):
+                                 endo_first_comment_time = endo_users[key]
+                                 three_months = parser.parse(endo_first_comment_time[0]) - relativedelta(months=int(3))
+                                 six_months = parser.parse(endo_first_comment_time[0]) - relativedelta(months=int(9))
+                                 if six_months < parser.parse(msg_created_time) < three_months:
+                                     if key in pos_users:
+                                         total_w = pos_users[key][-1][4] + len(value.split())
+                                         pos_users[key].append((sub_red,value,t, len(value.split()), total_w))
+                                     else:
+                                         pos_users[key] = [(sub_red,value,t, len(value.split()), len(value.split()))]
+                                   #  dates.add(t)
+                                   #  comment_length.add(len(value.split()))
+                                 else:
+                                     if key in outside_users:
+                                         outside_users[key].append((sub_red, value,t, len(value.split()), total_count))
+                                     else:
+                                         outside_users[key] = [(sub_red,value,t, len(value.split()), total_count)]
+                             else:
+                                # if t in dates or len(value) in comment_length:
+                                 #if t in dates:
+                                     if parser.parse(msg_created_time) < cut_off_date_3months:
+                                         if key in neg_users:
+                                             total_w = neg_users[key][-1][4] + len(value.split())
+                                             neg_users[key].append((sub_red,value,t, len(value.split()), total_w))
+                                         else:
+                                             neg_users[key] = [(sub_red,value,t, len(value.split()), len(value.split()))]
+
+
+             api_submission_url = 'https://api.pushshift.io/reddit/search/submission/?subreddit=' + sub_red + '&before=' + str(int(start_date_epoch)) + '&after=' + str(int(end_date_epoch)) + '&size=5000&sort=desc'
+             url = urllib.request.urlopen(api_submission_url)
+             user_data = json.loads(url.read().decode())
+             print('*****')
+             print('count of {0} batch is  {1} between {2} and {3}'.format(sub_red, count, end_date, start_date))
+             total_count = 0
+             for user_detail in user_data['data']:
+                 try:
+                     t = user_detail['created_utc']
+                     if 'author' in user_detail and 'title' in user_detail:
+                         key = user_detail['author']
+                     value = cleanhtml(saxutils.unescape(user_detail['title']))
+                     msg_created_time = datetime.fromtimestamp(t).strftime('%c')
+                
+                     if len(value) > 0:
+                         total_count += len(value.split())
+                         if key in list(endo_users):
+                             endo_first_comment_time = endo_users[key]
+                             three_months = parser.parse(endo_first_comment_time[0]) - relativedelta(months=int(3))
+                             six_months = parser.parse(endo_first_comment_time[0]) - relativedelta(months=int(9))
+                             if six_months < parser.parse(msg_created_time) < three_months:
+                                 if key in pos_users:
+                                     total_w = pos_users[key][-1][4] + len(value.split())
+                                     pos_users[key].append((sub_red,value, t, len(value.split()), total_w))
+                                 else:
+                                     pos_users[key] = [(sub_red,value, t, len(value.split()), len(value.split()))]
+                                 dates.add(t)
+                              #   comment_length.add(len(value.split()))
+                             else:
+                                 if key in outside_users:
+                                     outside_users[key].append((sub_red,value, t, len(value.split()), total_count))
+                                 else:
+                                     outside_users[key] = [(sub_red,value, t, len(value.split()), total_count)]
+                         else:
+                            # if t in dates or len(value) in comment_length:
+                            # if t in dates:
+                                 if parser.parse(msg_created_time) <     cut_off_date_3months:
+                                     if key in neg_users:
+                                         total_w = neg_users[key][-1][4] + len(value.split())
+                                         neg_users[key].append((sub_red,value, t, len(value.split()), total_w))
+                                     else:
+                                         neg_users[key] = [(sub_red,value, t, len(value.split()), len(value.split()))]
+
+                 except Exception as ex:
+                     print(ex)
+                     print(api_submission_url)
+                     init.logger.writeError(ex)
+             start_date = end_date
+             start_date_epoch = end_date_epoch
+             end_date = start_date - relativedelta(hours=int(1))
+             end_date_epoch = time.mktime(end_date.timetuple())
+             print('pos users:{0}'.format(len(pos_users)))
+             print('neg users:{0}'.format(len(neg_users)))
+             print('outside users:{0}'.format(len(outside_users)))
+        except Exception as e:
+            print(e)
+            init.logger.writeError(e)
+            start_date = end_date
+            start_date_epoch = end_date_epoch
+            end_date = start_date - relativedelta(hours=int(1))
+            end_date_epoch = time.mktime(end_date.timetuple())
+    return pos_users, neg_users, outside_users
+
+Process()
